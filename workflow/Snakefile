@@ -2,3 +2,96 @@
 # Please follow the best practices: 
 # https://snakemake.readthedocs.io/en/stable/snakefiles/best_practices.html,
 # in particular regarding the standardized folder structure mentioned there. 
+
+rule all:
+    input:
+        'results/day/time_series',
+        'results/month/time_series',
+        'results/season/time_series'
+
+rule prepare_nh_input:
+    input:
+        script='workflow/scripts/prepare-nh-input.py'
+        # config='config/config.yml'
+    output:
+        directory('results/day/time_series'),
+        directory('results/month/time_series'),
+        directory('results/season/time_series')
+    params:
+        outputdir='results'
+    conda:
+        "neuralhydrology"
+    shell:
+        """
+        python {input.script} {params.outputdir}
+        """
+
+# rule fit_gamlss_models:
+#     input:
+#         expand('results/exp2/analysis/{aggr}/input', aggr = AGGR),
+#         script='workflow/scripts/fit-gamlss-models.R',
+#         config='config/config.yml'
+#     output:
+#         directory('results/exp2/analysis/{expm}/gamlss')
+#     wildcard_constraints:
+#         expm='|'.join([re.escape(x) for x in EXPM]),
+#     params:
+#         method='forward',
+#         outputdir='results/exp2'
+#     conda:
+#         "decadal-flood-prediction"
+#     shell:
+#         """
+#         Rscript {input.script} {input.config} {wildcards.expm} {params.method} {params.outputdir}
+#         """
+
+# rule fit_lstm_models:
+#     input:
+#         expand('results/exp2/analysis/yr2/nh-input/time_series', aggr = AGGR),
+#         expand('results/exp2/analysis/yr2/nh-input/attributes', aggr = AGGR),
+#         expand('results/exp2/analysis/yr2/nh-input/basins.txt', aggr = AGGR),
+#         nh_config='results/exp2/analysis/yr2/nh-input/basins.yml',
+#         script='workflow/scripts/run-nh.py',
+#         config='config/config.yml'
+#     output:
+#         directory('results/exp2/analysis/hindcast/lstm')
+#     wildcard_constraints:
+#         expm='|'.join([re.escape(x) for x in EXPM]),
+#     conda:
+#         "neuralhydrology"
+#     shell:
+#         """
+#         python {input.script} {input.nh_config} {output}
+#         """
+
+# rule select_stations:
+#     input:
+#         script='workflow/scripts/select-stations-exp2.R',
+#         config='config/config.yml'
+#     output:
+#         'results/exp2/stations.txt'
+#     conda:
+#         "decadal-flood-prediction"
+#     shell:
+#         """
+#         Rscript {input.script} {input.config} {output}
+#         """
+
+# rule build_catchment_dataset:
+#     input:
+#         'results/exp2/nrfa-discharge-summaries',
+#         expand('results/exp2/analysis/{aggr}/matched_ensemble.parquet', aggr = AGGR),
+#         expand('results/exp2/analysis/{aggr}/matched_ensemble_error.parquet', aggr = AGGR),
+#         script='workflow/scripts/external/R/build-catchment-dataset.R',
+#         config='config/config.yml',
+#         obs='results/intermediate/obs.parquet'
+#     output:
+#         directory('results/exp2/analysis/{aggr}/input')
+#     params:
+#         outputdir='results/exp2'
+#     conda:
+#         "decadal-flood-prediction"
+#     shell:
+#         """
+#         Rscript {input.script} {input.config} {input.obs} {wildcards.aggr} {params.outputdir}
+#         """
