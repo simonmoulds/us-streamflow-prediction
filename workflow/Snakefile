@@ -5,9 +5,10 @@
 
 rule all:
     input:
-        'results/day/time_series',
-        'results/month/time_series',
-        'results/season/time_series'
+        # 'results/day/time_series',
+        # 'results/month/time_series',
+        # 'results/season/time_series',
+        'results/month/lstm'
 
 rule prepare_nh_input:
     input:
@@ -17,13 +18,40 @@ rule prepare_nh_input:
         directory('results/day/time_series'),
         directory('results/month/time_series'),
         directory('results/season/time_series')
-    params:
-        outputdir='results'
+    # params:
+    #     outputdir='results'
     conda:
         "neuralhydrology"
     shell:
         """
-        python {input.script} {params.outputdir}
+        python {input.script}
+        """
+
+rule train_lstm:
+    input:
+        nh_config='results/month/basins.yml',
+        script='workflow/scripts/train-nh.py'
+    output:
+        'results/month/runs/LATEST'
+    conda:
+        "neuralhydrology"
+    shell:
+        """
+        python {input.script} {input.nh_config} {output}
+        """
+
+rule evaluate_lstm:
+    input:
+        'results/month/runs/LATEST'
+        nh_config='results/month/basins.yml',
+        script='workflow/scripts/evaluate-nh.py'
+    output:
+        directory('results/month/lstm')
+    conda:
+        "neuralhydrology"
+    shell:
+        """
+        python {input.script} {input.nh_config} {output}
         """
 
 # rule fit_gamlss_models:

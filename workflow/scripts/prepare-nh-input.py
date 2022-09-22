@@ -5,6 +5,8 @@ import sys
 import shutil
 import datetime
 import re
+import glob
+import warnings
 from pathlib import Path
 from tqdm import tqdm
 
@@ -12,7 +14,7 @@ import pyarrow
 import numpy as np
 import pandas as pd
 import xarray as xr
-from ruamel.yaml import YAML
+from ruamel.yaml import YAML, representer
 
 from neuralhydrology.datasetzoo.camelsus import load_camels_us_attributes, load_camels_us_discharge, load_camels_us_forcings
 
@@ -22,14 +24,37 @@ from neuralhydrology.datasetzoo.camelsus import load_camels_us_attributes, load_
 
 # # For testing:
 # config = 'config/config.yml'
-outputroot = 'results'
-# outputdir = os.path.join(os.getcwd(), outputroot)
+# outputroot = 'results'
+outputdir = os.path.join(os.getcwd(), 'results')
 
 data_dir = os.path.join('resources', 'basin_dataset_public_v1p2')
 
 # ##################################### #
-# 1 - Time series data                  #
+# 1 - Basins list                       #
 # ##################################### #
+
+src = os.path.join('resources', '531_basin_list.txt')
+for time_period in ['day', 'month', 'season']:
+    dst = os.path.join('results', time_period)
+    shutil.copy(src, dst)
+
+with open(src, 'r') as f:
+    basins = f.read().splitlines()
+
+# ##################################### #
+# 2 - Time series data                  #
+# ##################################### #
+
+def _repair_maurer_header(data_dir, basin):
+    replacement_header = 'Year Mnth Day Hr\tDayl(s)\tPRCP(mm/day)\tSRAD(W/m2)\tSWE(mm)\tTmax(C)\tTmin(C)\tVp(Pa)\n'
+    filepath = glob.glob('resources/basin_dataset_public_v1p2/basin_mean_forcing/maurer/*/' + basin + '_lump_maurer_forcing_leap.txt')[0]
+    with open(filepath.format(basin = basin), 'r') as f:
+        contents = f.readlines()
+
+    contents[3] = replacement_header
+    with open(filepath.format(basin = basin), 'w') as f:
+        f.writelines(contents)
+
 
 def _load_basin_data(data_dir: Path, basin: str, forcings: list) -> pd.DataFrame:
     """Load input and output data from text files."""
@@ -73,16 +98,16 @@ for aggr in ['day', 'month', 'season']:
     except FileExistsError:
         pass
 
+# Make repair to basin 02108000
+_repair_maurer_header(data_dir, '02108000')
+_repair_maurer_header(data_dir, '05120500')
+_repair_maurer_header(data_dir, '09492400')
+
 forcings = ['daymet', 'maurer', 'nldas']
-basins = list(basin_metadata['basin_id'])
 for i in tqdm(range(len(basins))):
     basin = basins[i]
     # Note that discharge is normlized by area in this function
-    try:
-        # 02108000 doesn't work because maurer data is missing time columns
-        df = _load_basin_data(Path(data_dir), basin, forcings)
-    except AttributeError:
-        continue
+    df = _load_basin_data(Path(data_dir), basin, forcings)
     ds = xr.Dataset.from_dataframe(df)
     # Remove Year/Mnth/Day variables
     varnames = list(ds.keys())
@@ -93,11 +118,23 @@ for i in tqdm(range(len(basins))):
     # Day [i.e. as in original]
     ds_day = xr.merge([ds_target, ds_forcings])
     # Month
-    ds_forcings_month = ds_forcings.resample(date = '1M').mean()
-    ds_target_month_mean = ds_target.resample(date = '1M').mean().rename("QObs(mm/d)_mean")
-    ds_target_month_max = ds_target.resample(date = '1M').max().rename("QObs(mm/d)_max")
-    ds_target_month_min = ds_target.resample(date = '1M').max().rename("QObs(mm/d)_min")
-    ds_month = xr.merge([ds_target_month_mean, ds_target_month_max, ds_target_month_min, ds_forcings_month])
+    ds_forcings_month = ds_forcings.resample(date = '1MS').mean()
+    ds_target_month_mean = ds_target.resample(date = '1MS').mean().rename("QObs(mm/d)_mean")
+    ds_target_month_max = ds_target.resample(date = '1MS').max().rename("QObs(mm/d)_max")
+    ds_target_month_min = ds_target.resample(date = '1MS').max().rename("QObs(mm/d)_min")
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', category=RuntimeWarning)
+        ds_target_month_q95 = ds_target.resample(date = '1MS').quantile(.95).rename("QObs(mm/d)_q95")
+        ds_target_month_q05 = ds_target.resample(date = '1MS').quantile(.05).rename("QObs(mm/d)_q05")
+
+    ds_month = xr.merge([
+        ds_target_month_mean,
+        ds_target_month_max,
+        ds_target_month_min,
+        ds_target_month_q95.drop_vars('quantile'),
+        ds_target_month_q05.drop_vars('quantile'),
+        ds_forcings_month
+    ])
     # Season
     ds_forcings_season = ds_forcings_month.resample(date = 'QS-DEC').mean()
     ds_target_season_mean = ds_target.resample(date = 'QS-DEC').mean().rename("QObs(mm/d)_mean")
@@ -133,93 +170,105 @@ for time_period in ['day', 'month', 'season']:
     except FileExistsError:
         pass
 
-    for attr in ['clim', 'geol', 'hydro', 'name', 'soil', 'topo', 'vege']:
+    for attr in ['clim', 'topo', 'vege', 'soil', 'geol']:
         src = os.path.join(data_dir, '..', f'camels_{attr}.txt')
-        dst = os.path.join('results', time_period, 'attributes', f'camels_{attr}.txt')
-        shutil.copy(src, dst)
+        dst = os.path.join('results', time_period, 'attributes', f'camels_{attr}.csv')
+        df = pd.read_csv(src, sep = ';', dtype={0: str})  # make sure we read the basin id as str
+        # df = df.fillna(df.mean())
+        df.to_csv(dst, index = False)
 
 # ##################################### #
 # 3 - NH configuration                  #
 # ##################################### #
 
-# TODO ensure this matches canonical US CAMELS LSTM paper
+representer.RoundTripRepresenter.ignore_aliases = lambda x, y: True
 
-# climatic_attributes = ['p_mean', 'pet_mean', 'aridity', 'p_seasonality', 'frac_snow', 'high_prec_freq', 'high_prec_dur', 'low_prec_freq', 'low_prec_dur']
-# human_influence_attributes = []
-# hydrogeology_attributes = ['inter_high_perc', 'inter_mod_perc', 'inter_low_perc', 'frac_high_perc', 'frac_mod_perc', 'frac_low_perc', 'no_gw_perc', 'low_nsig_perc', 'nsig_low_perc']
-# hydrologic_attributes = []
-# landcover_attributes = ['dwood_perc', 'ewood_perc', 'urban_perc']
-# soil_attributes = ['sand_perc', 'silt_perc', 'clay_perc', 'porosity_hypres', 'conductivity_hypres', 'soil_depth_pelletier_50']
-# topographic_attributes = ['gauge_lat', 'gauge_lon', 'gauge_elev', 'area', 'elev_10', 'elev_50', 'elev_90']
+# These match the attributes listed in Appendix A: https://doi.org/10.5194/hess-23-5089-2019
+climatic_attributes = ['p_mean', 'pet_mean', 'aridity', 'p_seasonality', 'frac_snow', 'high_prec_freq', 'high_prec_dur', 'low_prec_freq', 'low_prec_dur']
+topographic_attributes = ['elev_mean', 'slope_mean', 'area_gages2']
+landcover_attributes = ['frac_forest', 'lai_max', 'gvf_max', 'gvf_diff']
+soil_attributes = ['soil_depth_pelletier', 'soil_depth_statsgo', 'soil_porosity', 'soil_conductivity', 'max_water_content', 'sand_frac', 'silt_frac', 'clay_frac']
+hydrogeology_attributes = ['carbonate_rocks_frac', 'geol_permeability']
 
-# static_attributes = climatic_attributes + \
-#     human_influence_attributes + \
-#     hydrogeology_attributes + \
-#     hydrologic_attributes + \
-#     landcover_attributes + \
-#     soil_attributes + \
-#     topographic_attributes
+static_attributes = climatic_attributes + \
+    topographic_attributes + \
+    landcover_attributes + \
+    soil_attributes + \
+    hydrogeology_attributes
 
-# dynamic_inputs = ['P', 'T', 'EA', 'AMV']
-# # static_attributes = ['gauge_lat', 'gauge_lon', 'p_mean', 'pet_mean', 'area'] #, 'q_mean']#, 'frac_snow', 'high_prec_freq', 'high_prec_dur', 'low_prec_freq', 'low_prec_dur']
+# To begin, use the Maurer forcings (as in https://doi.org/10.5194/hess-23-5089-2019)
+dynamic_inputs = ['Dayl_s_maurer', 'PRCP_mm_day_maurer', 'SRAD_W_m2_maurer', 'Tmax_C_maurer', 'Tmin_C_maurer', 'Vp_Pa_maurer']
+target_variables = ['QObs_mm_d_mean', 'QObs_mm_d_q95', 'QObs_mm_d_q05']
 
-# yaml = YAML() #typ = 'safe')
-# cfg = yaml.load(Path('resources/nh-config-template.yml'))
-# cfg['experiment_name'] = 'cudalstm_' + str(n_stations) + '_basins_' + str(aggr_period)
-# cfg['run_dir'] = rundir
-# cfg['train_basin_file'] = os.path.join(outputdir, "basins.txt")
-# cfg['validation_basin_file'] = os.path.join(outputdir, "basins.txt")
-# cfg['test_basin_file'] = os.path.join(outputdir, "basins.txt")
-# cfg['train_start_date'] = ["01/12/1961", "01/12/1992"] #"01/12/1961"
-# cfg['train_end_date'] = ["01/12/1990", "01/12/2006"] #"01/12/1990", #"01/12/2006"
-# cfg['validation_start_date'] = "01/12/1991" #"01/12/1961"
-# cfg['validation_end_date'] = "01/12/1991"
-# cfg['test_start_date'] = "01/12/1961"
-# cfg['test_end_date']= "01/12/2006"
-# cfg['device'] = "cpu" # "cuda:0"
-# cfg['validate_every'] = int(3)
-# cfg['validate_n_random_basins'] = int(1)
-# cfg['metrics'] = ["MSE"]
-# cfg['save_validation_results'] = True
-# cfg['model'] = "cudalstm" #"cudalstm" # "ealstm"
-# cfg['head'] = "regression"
-# cfg['output_activation'] = "linear"
-# cfg['hidden_size'] = int(64) #int(128) #int(20) #int(64) #int(20)
-# cfg['initial_forget_bias'] = int(3)
-# cfg['output_dropout'] = 0.4
-# cfg['optimizer'] = "Adam"
-# cfg['loss'] = "MSE"
-# cfg['learning_rate'] = {0: 1e-2, 30: 5e-3, 40: 1e-3}
-# cfg['batch_size'] = int(128) #int(256)
-# cfg['epochs'] = int(50) #int(50) #int(500) #int(150) #int(75)
-# cfg['clip_gradient_norm'] = int(1)
-# cfg['predict_last_n'] = int(1)
-# cfg['seq_length'] = int(4) #int(4) #int(8)
-# cfg['num_workers'] = int(8)
-# cfg['log_interval'] = int(5)
-# cfg['log_tensorboard'] = True
-# cfg['log_n_figures'] = int(0)
-# cfg['save_weights_every'] = int(1)
-# cfg['dataset'] = "generic"
-# cfg['data_dir'] = outputdir
-# cfg['dynamic_inputs'] = dynamic_inputs
-# cfg['target_variables'] = ["Q95"]
-# cfg['clip_targets_to_zero'] = ["Q95"]
-# cfg['static_attributes'] = static_attributes
+yaml = YAML() #typ = 'safe')
+cfg = yaml.load(Path('/Users/simonmoulds/dev/neuralhydrology/examples/01-Introduction/1_basin.yml'))
+cfg['experiment_name'] = 'test'
+cfg['run_dir'] = None
+cfg['train_basin_file'] = os.path.join(outputdir, "531_basin_list.txt") # TODO 531_basin_list.txt
+cfg['validation_basin_file'] = os.path.join(outputdir, "531_basin_list.txt")
+cfg['test_basin_file'] = os.path.join(outputdir, "531_basin_list.txt")
+cfg['train_start_date'] = "01/10/1999"
+cfg['train_end_date'] = "30/09/2008"
+cfg['validation_start_date'] = "01/10/1980"
+cfg['validation_end_date'] = "30/09/1989"
+cfg['test_start_date'] = "01/10/1989"
+cfg['test_end_date']= "30/09/1999"
+cfg['device'] = "cpu" # "cuda:0"
+cfg['validate_every'] = None # int(3)
+cfg['validate_n_random_basins'] = int(1)
+cfg['metrics'] = ['NSE']            # Might be different depending on daily/monthly?
+cfg['save_validation_results'] = False
+cfg['model'] = "cudalstm"
+cfg['head'] = "regression"
+cfg['output_activation'] = "linear" # Or relu, softplus
+cfg['hidden_size'] = int(256)       # 128/64/... may vary by timescale
+cfg['initial_forget_bias'] = int(3)
+cfg['output_dropout'] = 0.4
+cfg['optimizer'] = "Adam"
+cfg['loss'] = "NSE"
+cfg['learning_rate'] = {0: 1e-3, 10: 5e-4, 25: 1e-4}
+cfg['batch_size'] = int(256)
+cfg['epochs'] = int(30)
+cfg['clip_gradient_norm'] = int(1)
+cfg['predict_last_n'] = int(1)
+cfg['seq_length'] = 365 # 12
+cfg['num_workers'] = int(16)
+cfg['log_interval'] = int(5)
+cfg['log_tensorboard'] = True
+cfg['log_n_figures'] = int(0)
+cfg['save_weights_every'] = int(1)
+cfg['dataset'] = "generic"
+cfg['data_dir'] = outputdir
+cfg['dynamic_inputs'] = dynamic_inputs
+cfg['target_variables'] = target_variables
+cfg['clip_targets_to_zero'] = target_variables
+cfg['static_attributes'] = static_attributes
 
-# for time_period in ['day', 'month', 'season']:
-#     conf_filename = os.path.join('results', time_period, 'basins.yml')
-#     with open(conf_filename, 'wb') as f:
-#         yaml.dump(cfg, f)
+for time_period in ['day', 'month', 'season']:
+    # The above configuration settings need to be adjusted for monthly-seasonal data
+    if time_period == 'month':
+        cfg["train_start_date"] = "01/10/1999"
+        cfg["train_end_date"] = "01/09/2008"
+        cfg["validation_start_date"] = "01/10/1980"
+        cfg["validation_end_date"] = "01/09/1989"
+        cfg["test_start_date"] = "01/10/1989"
+        cfg["test_end_date"] = "01/09/1999"
+        cfg["seq_length"] = 12
+    if time_period == 'season':
+        cfg["train_start_date"] = "01/12/1999" # DJF
+        cfg["train_end_date"] = "01/09/2008"
+        cfg["validation_start_date"] = "01/12/1980"
+        cfg["validation_end_date"] = "01/09/1989"
+        cfg["test_start_date"] = "01/12/1989"
+        cfg["test_end_date"] = "01/09/1999"
+        cfg["seq_length"] = 4
+    cfg['run_dir'] = os.path.join('results', time_period, 'runs')
+    cfg['train_basin_file'] = os.path.join('results', time_period, '531_basin_list.txt')
+    cfg['test_basin_file'] = os.path.join('results', time_period, '531_basin_list.txt')
+    cfg['validation_basin_file'] = os.path.join('results', time_period, '531_basin_list.txt')
+    cfg['data_dir'] = os.path.join('results', time_period)
 
-# # ##################################### #
-# # 4 - Basins list                       #
-# # ##################################### #
+    conf_filename = os.path.join('results', time_period, 'basins.yml')
+    with open(conf_filename, 'wb') as f:
+        yaml.dump(cfg, f)
 
-# basins = list(basin_metadata['basin_id'])
-# for time_period in ['day', 'month', 'season']:
-#     basin_filename = os.path.join('results', time_period, 'basins.txt')
-#     with open(basin_filename, 'w') as f:
-#         for stn in station_ids:
-#             f.write(str(stn))
-#             f.write('\n')
