@@ -262,7 +262,7 @@ for time_period in ['day', 'month', 'season']:
         cfg["test_start_date"] = "01/12/1989"
         cfg["test_end_date"] = "01/09/1999"
         cfg["seq_length"] = 4
-    cfg['run_dir'] = os.path.join('results', time_period, 'runs')
+    cfg['run_dir'] = os.path.join('results', time_period, 'lstm', 'runs')
     cfg['train_basin_file'] = os.path.join('results', time_period, '531_basin_list.txt')
     cfg['test_basin_file'] = os.path.join('results', time_period, '531_basin_list.txt')
     cfg['validation_basin_file'] = os.path.join('results', time_period, '531_basin_list.txt')

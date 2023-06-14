@@ -62,3 +62,18 @@ for i in tqdm(range(n_basins)):
         root_path = os.path.join(output_dir, 'test'),
         partition_cols = ['ID']
     )
+
+with open("/Users/simonmoulds/projects/us-streamflow-prediction/results/month/lstm/runs/test_2309_104958/test/model_epoch030/test_results.p", "rb") as fp:
+    results = pickle.load(fp)
+
+basins = [basin for basin in results.keys()]
+
+d = {}
+for basin in basins:
+    vals = {}
+    for var in ['QObs_mm_d_mean_NSE', 'QObs_mm_d_q95_NSE', 'QObs_mm_d_q05_NSE']:
+        vals[var] = results[basin]['1MS']['QObs_mm_d_mean_NSE']
+    d[basin] = vals
+
+df = pd.DataFrame.from_dict(d, orient = 'index')
+df.to_csv('~/projects/lstm_exp_results.csv')

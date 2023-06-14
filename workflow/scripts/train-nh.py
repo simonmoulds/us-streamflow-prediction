@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import os
 import torch
 from neuralhydrology.nh_run import start_run, eval_run
 from pathlib import Path
@@ -7,7 +8,7 @@ from ruamel.yaml import YAML
 
 # TESTING
 nh_config_filename = 'results/month/basins.yml'
-output_dir = 'results/month/lstm'
+# output_dir = 'results/month/lstm'
 
 # # Get command line arguments
 # nh_config = sys.argv[1]
